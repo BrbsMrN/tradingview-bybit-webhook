@@ -1,80 +1,65 @@
 from fastapi import FastAPI, Request
 import os
 import httpx
-import hmac
-import hashlib
-import time
 
 app = FastAPI()
 
 # API credentials
 API_KEY = os.getenv("BYBIT_API_KEY")
 API_SECRET = os.getenv("BYBIT_API_SECRET")
-BASE_URL = "https://api.bybit.com"
+BASE_URL = "https://api.bybit.com"  # Bybit Futures API URL
 
 @app.post("/")
 async def webhook_listener(request: Request):
     data = await request.json()
 
-    side = data.get("side", "buy")
-    symbol = data.get("symbol", "SOLUSDT")
-    entry_price = float(data.get("entry_price", 100))
-    leverage = 20  # Fixed leverage
+    side = data.get("side", "buy")  # buy or sell
+    symbol = data.get("symbol", "SOLUSDT")  # e.g., SOLUSDT
+    leverage = data.get("leverage", 20)  # default leverage 20
+    entry_price = float(data.get("entry_price", 100))  # default price
 
-    # Get Wallet Balance (Unified account type)
-    timestamp = str(int(time.time() * 1000))
-    params = {
-        "api_key": API_KEY,
-        "timestamp": timestamp
-    }
-    sign = hmac.new(API_SECRET.encode(), '&'.join([f"{k}={v}" for k, v in params.items()]).encode(), hashlib.sha256).hexdigest()
-    params["sign"] = sign
+    fixed_usdt = 10  # Θέση 10$
+    quantity = fixed_usdt / entry_price  # Υπολογισμός quantity
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{BASE_URL}/v2/private/wallet/balance", params=params)
-        wallet_data = response.json()
-
-    balance = 0
-    try:
-        balance = float(wallet_data['result']['USDT']['wallet_balance'])
-    except:
-        balance = 0
-
-    margin = balance * 0.90  # Χρησιμοποιούμε 90% του balance
-    quantity = round((margin * leverage) / entry_price, 3)  # Quantity με leverage
-
-    # Calculate TP, SL, Trailing
-    tp_percent = 0.015
-    sl_percent = 0.012
-    trailing_distance_percent = 0.014
+    # Υπολογισμοί για TP, SL και Trailing
+    tp_percent = 0.015  # +1.5%
+    sl_percent = 0.012  # -1.2%
+    trailing_percent = 0.014  # 1.4%
 
     tp_price = entry_price * (1 + tp_percent) if side == "buy" else entry_price * (1 - tp_percent)
     sl_price = entry_price * (1 - sl_percent) if side == "buy" else entry_price * (1 + sl_percent)
-    trailing_distance = int(trailing_distance_percent * 10000)
+    trailing_distance = int(trailing_percent * 10000)  # σε ticks
 
-    # Create position
+    # Φτιάχνουμε την εντολή αγοράς
     order_body = {
         "category": "linear",
         "symbol": symbol,
         "side": side,
         "orderType": "Market",
-        "qty": quantity,
+        "qty": round(quantity, 3),
         "leverage": leverage,
         "timeInForce": "GoodTillCancel",
-        "reduceOnly": False,
-        "closeOnTrigger": False,
-        "takeProfit": str(round(tp_price, 2)),
-        "stopLoss": str(round(sl_price, 2)),
-        "tpTriggerBy": "LastPrice",
-        "slTriggerBy": "LastPrice",
-        "trailingStop": str(trailing_distance)
+        "reduceOnly": False
+    }
+
+    headers = {
+        "X-BYBIT-API-KEY": API_KEY,
+        "Content-Type": "application/json"
     }
 
     async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{BASE_URL}/v5/order/create",
-            headers={"X-BAPI-API-KEY": API_KEY},
-            json=order_body
-        )
+        await client.post(f"{BASE_URL}/v5/order/create", headers=headers, json=order_body)
 
-    return {"status": "Order placed successfully!"}
+        # Φτιάχνουμε trailing stop
+        trailing_body = {
+            "category": "linear",
+            "symbol": symbol,
+            "takeProfit": round(tp_price, 2),
+            "stopLoss": round(sl_price, 2),
+            "trailingStop": trailing_distance,
+            "tpTriggerBy": "LastPrice",
+            "slTriggerBy": "LastPrice"
+        }
+        await client.post(f"{BASE_URL}/v5/position/trading-stop", headers=headers, json=trailing_body)
+
+    return {"status": "Order Sent!"}
