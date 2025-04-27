@@ -18,7 +18,7 @@ async def webhook_listener(request: Request):
     leverage = data.get("leverage", 20)  # default leverage 20
     entry_price = float(data.get("entry_price", 100))  # default price
 
-    fixed_usdt = 10  # Θέση 10$
+    fixed_usdt = 3  # Θέση 10$
     quantity = fixed_usdt / entry_price  # Υπολογισμός quantity
 
     # Υπολογισμοί για TP, SL και Trailing
